@@ -1,71 +1,73 @@
 const fs = require("fs");
+const https = require("https");
+const path = require("path");
 
-function readfile() {
-  const data = fs.readFileSync("./package.json");
-  return JSON.parse(data).dependency;
-}
-
-//all  of the dependencies we are using are uploaded on the npm registry so we have to
-// fetch them from npm registry
-
-const http = require("https");
+// Fetch all dependencies
 function getdata() {
   const dependencies = readfile();
-  for (const [pkg, version] of Object.entries(dependencies)) {
-    console.log("Forming URL ---------");
-    let val = fetchPackagesfromRegistry(pkg, version);
-    return val.then((response) => response).catch((error) => console.log("Error : ", error));
-  }
+  const promises = Object.entries(dependencies).map(([pkg, version]) => fetchPackagesfromRegistry(pkg, version));
+  return Promise.all(promises);
 }
 
+// Read package.json and return dependencies
+function readfile() {
+  const data = fs.readFileSync("./package.json");
+  return JSON.parse(data).dependencies;
+}
+
+// Fetch tarball URLs from NPM registry
 function fetchPackagesfromRegistry(packageName, version) {
   const url = `https://registry.npmjs.org/${packageName}`;
-
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
-      let data = "";
-      res.on("data", (chunk) => {
-        data += chunk;
-      });
-      res.on("end", () => {
-        try {
-          const jsondata = JSON.parse(data);
-          if (jsondata.dist && jsondata.dist.tarball) resolve(jsondata.dist.tarball);
-          else reject("TRABALL URL NOT PRESENT");
-        } catch (error) {
-          reject(error);
-        }
-      });
-    });
+    https
+      .get(url, (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            const jsondata = JSON.parse(data);
+            if (jsondata.versions && jsondata.versions[version] && jsondata.versions[version].dist.tarball) {
+              resolve(jsondata.versions[version].dist.tarball);
+            } else {
+              reject(`Tarball URL not found for ${packageName}@${version}`);
+            }
+          } catch (error) {
+            reject(error);
+          }
+        });
+      })
+      .on("error", reject);
   });
 }
 
-const path = require("path");
-let tarballURL = getdata()
-  .then((tarballURL) => downloadTarball(tarballURL, "lodash", "4.17.21"))
-  .then((filePath) => console.log("Downladed @ ", filePath))
-  .catch((error) => console.log(">>Error<< ---", error));
+// Run
+getdata()
+  .then((urls) => {
+    console.log("Downloading tarballs...");
+    return Promise.all(
+      urls.map((url, i) => downloadTarball(url, Object.keys(readfile())[i], Object.values(readfile())[i]))
+    );
+  })
+  .then((filePaths) => console.log("Downloaded @", filePaths))
+  .catch((error) => console.error(">> Error <<", error));
 
-//download the tarball( is a compressed archive file used to package multiple files together)
+// Download tarball
 function downloadTarball(url, packageName, version) {
   return new Promise((resolve, reject) => {
     const filePath = path.join(__dirname, "node_modules", packageName, `${version}.tgz`);
-    //if not present create the directory
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    //get a connection to write into the file
     const file = fs.createWriteStream(filePath);
-    http.get(url, (res) => {
-      res.pipe(file);
-      file
-        .on("finish", () => {
-          file.close(() => {
-            resolve(filePath);
-          });
-        })
-        .on("error", (err) => {
-          fs.unlinkSync(filePath);
-          reject(err);
+
+    https
+      .get(url, (res) => {
+        res.pipe(file);
+        file.on("finish", () => {
+          file.close(() => resolve(filePath));
         });
-    });
+      })
+      .on("error", (err) => {
+        fs.unlinkSync(filePath);
+        reject(err);
+      });
   });
 }
