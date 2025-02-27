@@ -1,0 +1,6 @@
+{
+    "name": "my-project",
+    "dependency": {
+        "lodash": "4.17.21"
+    }
+}
